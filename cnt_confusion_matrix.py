@@ -7,10 +7,9 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from sklearn.linear_model import LogisticRegression
 
 BASE         = os.path.dirname(os.path.abspath(__file__))
-WEIGHTS_PATH = os.path.join(BASE, "mlr_weights.csv")
-NORM_PATH    = os.path.join(BASE, "mlr_norm_params.csv")
 TRAINING_CSV = os.path.join(BASE, "training_data.csv")
 NEW_ENTRIES  = os.path.join(BASE, "new_entries.csv")
 
@@ -21,13 +20,6 @@ FEAT_COLS = [
     'n_P_over_Pth', 'Rb_Resistance_Before',
 ]
 CLASS_LABELS = ['≥1000%', '40–999%', '5–39%', '0–4%', '-5–-1%', '-20–-6%', '<-20%']
-
-def mnrval_py(wm, X_norm):
-    X_aug  = np.hstack([np.ones((X_norm.shape[0], 1)), X_norm])
-    scores = X_aug @ wm
-    exp_s  = np.exp(np.clip(scores, -500, 500))
-    denom  = 1 + exp_s.sum(axis=1, keepdims=True)
-    return np.hstack([exp_s / denom, 1 / denom])
 
 def _ycat(Y):
     return np.select(
@@ -45,15 +37,8 @@ def get_new_entries():
 
 @st.cache_data(ttl=60)
 def load_confusion_matrix(selected_rowids=None):
-    missing = [p for p in [WEIGHTS_PATH, NORM_PATH, TRAINING_CSV] if not os.path.exists(p)]
-    if missing:
-        return None, None, None, [os.path.basename(p) for p in missing]
-
-    wm_df   = pd.read_csv(WEIGHTS_PATH, index_col=0)
-    norm_df = pd.read_csv(NORM_PATH,    index_col=0)
-    wm      = wm_df.values.astype(float)
-    X_mean  = norm_df.loc['mean', FEAT_COLS].values.astype(float)
-    X_std   = norm_df.loc['std',  FEAT_COLS].values.astype(float)
+    if not os.path.exists(TRAINING_CSV):
+        return None, None, None, ['training_data.csv']
 
     data = pd.read_csv(TRAINING_CSV)
 
@@ -66,13 +51,18 @@ def load_confusion_matrix(selected_rowids=None):
             if shared:
                 data = pd.concat([data, subset[shared]], ignore_index=True)
 
-    data   = data.dropna(subset=FEAT_COLS + ['Ra_minus_Rb_over_Rb_percent'])
-    X      = data[FEAT_COLS].values.astype(float)
-    Y      = data['Ra_minus_Rb_over_Rb_percent'].values
-    Ycat   = _ycat(Y)
+    data = data.dropna(subset=FEAT_COLS + ['Ra_minus_Rb_over_Rb_percent'])
+    X    = data[FEAT_COLS].values.astype(float)
+    Y    = data['Ra_minus_Rb_over_Rb_percent'].values
+    Ycat = _ycat(Y)
+
+    X_mean = X.mean(axis=0)
+    X_std  = X.std(axis=0, ddof=1)
     X_norm = (X - X_mean) / X_std
-    pm     = mnrval_py(wm, X_norm)
-    pred   = pm.argmax(axis=1) + 1
+
+    clf  = LogisticRegression(solver='lbfgs', max_iter=10000, C=1e9)
+    clf.fit(X_norm, Ycat)
+    pred = clf.predict(X_norm)
 
     K  = 7
     cm = np.zeros((K, K), dtype=int)
