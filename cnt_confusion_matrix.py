@@ -1,19 +1,18 @@
 """
-Professor Dashboard — CNT MLR Confusion Matrix Viewer
+CNT MLR Confusion Matrix Dashboard
 """
 
 import os
-import sqlite3
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-# ── Paths (relative to this script) ──────────────────────────────────────────
 BASE         = os.path.dirname(os.path.abspath(__file__))
 WEIGHTS_PATH = os.path.join(BASE, "mlr_weights.csv")
 NORM_PATH    = os.path.join(BASE, "mlr_norm_params.csv")
 TRAINING_CSV = os.path.join(BASE, "training_data.csv")
+NEW_ENTRIES  = os.path.join(BASE, "new_entries.csv")
 
 FEAT_COLS = [
     'V1_MaxPulse_Voltage_V', 'Number_of_Pulses', 'Applied_energy_J',
@@ -23,7 +22,6 @@ FEAT_COLS = [
 ]
 CLASS_LABELS = ['≥1000%', '40–999%', '5–39%', '0–4%', '-5–-1%', '-20–-6%', '<-20%']
 
-# ── MLR helpers ──────────────────────────────────────────────────────────────
 def mnrval_py(wm, X_norm):
     X_aug  = np.hstack([np.ones((X_norm.shape[0], 1)), X_norm])
     scores = X_aug @ wm
@@ -37,9 +35,16 @@ def _ycat(Y):
         [1, 2, 3, 4, 5, 6], default=7,
     )
 
-# ── Confusion matrix ──────────────────────────────────────────────────────────
+def get_new_entries():
+    if not os.path.exists(NEW_ENTRIES):
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(NEW_ENTRIES)
+    except Exception:
+        return pd.DataFrame()
+
 @st.cache_data(ttl=60)
-def load_confusion_matrix(selected_rows=None):
+def load_confusion_matrix(selected_rowids=None):
     missing = [p for p in [WEIGHTS_PATH, NORM_PATH, TRAINING_CSV] if not os.path.exists(p)]
     if missing:
         return None, None, None, [os.path.basename(p) for p in missing]
@@ -52,12 +57,14 @@ def load_confusion_matrix(selected_rows=None):
 
     data = pd.read_csv(TRAINING_CSV)
 
-    # Append any manually pasted rows
-    if selected_rows:
-        extra = pd.DataFrame(selected_rows)
-        shared = [c for c in FEAT_COLS + ['Ra_minus_Rb_over_Rb_percent'] if c in extra.columns]
-        if shared:
-            data = pd.concat([data, extra[shared]], ignore_index=True)
+    if selected_rowids:
+        new_df = get_new_entries()
+        if not new_df.empty and 'rowid' in new_df.columns:
+            subset = new_df[new_df['rowid'].isin(selected_rowids)]
+            shared = [c for c in FEAT_COLS + ['Ra_minus_Rb_over_Rb_percent']
+                      if c in subset.columns]
+            if shared:
+                data = pd.concat([data, subset[shared]], ignore_index=True)
 
     data   = data.dropna(subset=FEAT_COLS + ['Ra_minus_Rb_over_Rb_percent'])
     X      = data[FEAT_COLS].values.astype(float)
@@ -100,12 +107,31 @@ def confusion_matrix_fig(cm, acc, n):
     return fig
 
 # ── Page ──────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="CNT — Professor View", layout="centered")
+st.set_page_config(page_title="CNT Confusion Matrix", layout="centered")
 st.title("CNT Pulse Outcome Prediction")
 st.caption("Multinomial logistic regression — nanotube electromigration data.")
 st.divider()
 
-cm, acc, n, missing = load_confusion_matrix()
+# ── New entry selector ────────────────────────────────────────────────────────
+selected_rowids = []
+new_df = get_new_entries()
+
+if not new_df.empty:
+    st.subheader("Include new experiments")
+    st.caption("Tick entries to add them to the confusion matrix.")
+    for _, row in new_df.iterrows():
+        label = (f"{row.get('Chip and Device', 'Unknown')} | "
+                 f"V1={row.get('V1_MaxPulse_Voltage_V','?')}  "
+                 f"N={int(row.get('Number_of_Pulses', 0))}  "
+                 f"(row {int(row['rowid'])})")
+        if st.checkbox(label, key=f"row_{int(row['rowid'])}"):
+            selected_rowids.append(int(row['rowid']))
+    st.divider()
+
+# ── Confusion matrix ──────────────────────────────────────────────────────────
+cm, acc, n, missing = load_confusion_matrix(
+    selected_rowids=tuple(selected_rowids) if selected_rowids else None
+)
 
 if missing:
     st.error(f"Missing files: {', '.join(missing)}")
@@ -113,7 +139,6 @@ elif cm is not None:
     st.plotly_chart(confusion_matrix_fig(cm, acc, n),
                     use_container_width=True, config={"displayModeBar": False})
 
-    # Per-class table
     K       = cm.shape[0]
     cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True).clip(min=1)
     rows    = [{"Class": CLASS_LABELS[i],
@@ -129,5 +154,5 @@ else:
 st.divider()
 st.caption(
     "Class = ΔR/Rb (%) change in CNT resistance after electromigration pulsing.  "
-    "Model trained using MATLAB mnrfit, replicated here in Python."
+    "Model trained using MATLAB mnrfit, replicated in Python."
 )
