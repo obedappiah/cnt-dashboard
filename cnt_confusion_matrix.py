@@ -35,10 +35,26 @@ def get_new_entries():
     except Exception:
         return pd.DataFrame()
 
+def _build_cm(X, Ycat, normalise=True):
+    if normalise:
+        X_mean = X.mean(axis=0)
+        X_std  = X.std(axis=0, ddof=1)
+        X_fit  = (X - X_mean) / X_std
+    else:
+        X_fit  = X
+    clf = LogisticRegression(solver='lbfgs', max_iter=10000, C=1e9)
+    clf.fit(X_fit, Ycat)
+    pred = clf.predict(X_fit)
+    K  = 7
+    cm = np.zeros((K, K), dtype=int)
+    for t, p in zip(Ycat, pred):
+        cm[t - 1, p - 1] += 1
+    return cm, (pred == Ycat).mean()
+
 @st.cache_data(ttl=60)
 def load_confusion_matrix(selected_rowids=None):
     if not os.path.exists(TRAINING_CSV):
-        return None, None, None, ['training_data.csv']
+        return None, None, None, None, None, ['training_data.csv']
 
     data = pd.read_csv(TRAINING_CSV)
 
@@ -51,27 +67,18 @@ def load_confusion_matrix(selected_rowids=None):
             if shared:
                 data = pd.concat([data, subset[shared]], ignore_index=True)
 
-    data = data.dropna(subset=FEAT_COLS + ['Ra_minus_Rb_over_Rb_percent'])
-    X    = data[FEAT_COLS].values.astype(float)
-    Y    = data['Ra_minus_Rb_over_Rb_percent'].values
-    Ycat = _ycat(Y)
+    data  = data.dropna(subset=FEAT_COLS + ['Ra_minus_Rb_over_Rb_percent'])
+    X     = data[FEAT_COLS].values.astype(float)
+    Y     = data['Ra_minus_Rb_over_Rb_percent'].values
+    Ycat  = _ycat(Y)
+    n     = len(Y)
 
-    X_mean = X.mean(axis=0)
-    X_std  = X.std(axis=0, ddof=1)
-    X_norm = (X - X_mean) / X_std
+    cm_norm, acc_norm   = _build_cm(X, Ycat, normalise=True)
+    cm_raw,  acc_raw    = _build_cm(X, Ycat, normalise=False)
 
-    clf  = LogisticRegression(solver='lbfgs', max_iter=10000, C=1e9)
-    clf.fit(X_norm, Ycat)
-    pred = clf.predict(X_norm)
+    return cm_norm, acc_norm, cm_raw, acc_raw, n, []
 
-    K  = 7
-    cm = np.zeros((K, K), dtype=int)
-    for t, p in zip(Ycat, pred):
-        cm[t - 1, p - 1] += 1
-    acc = (pred == Ycat).mean()
-    return cm, acc, len(Y), []
-
-def confusion_matrix_fig(cm, acc, n):
+def confusion_matrix_fig(cm, acc, n, title_suffix=""):
     K       = cm.shape[0]
     cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True).clip(min=1)
     text    = [[f"{cm[i,j]}<br>{cm_norm[i,j]*100:.0f}%" for j in range(K)] for i in range(K)]
@@ -82,9 +89,8 @@ def confusion_matrix_fig(cm, acc, n):
     ))
     fig.update_layout(
         title=dict(
-            text=f"CNT Pulse Outcome — MLR Confusion Matrix  |  "
-                 f"Accuracy {acc*100:.1f}%  |  n = {n}",
-            font=dict(size=13, family="Times New Roman, serif"),
+            text=f"MLR Confusion Matrix  |  Accuracy {acc*100:.1f}%  |  n = {n}  |  {title_suffix}",
+            font=dict(size=12, family="Times New Roman, serif"),
         ),
         xaxis=dict(title="Predicted class", side="bottom",
                    tickfont=dict(size=10, family="Times New Roman, serif")),
@@ -118,15 +124,22 @@ if not new_df.empty:
     st.divider()
 
 # ── Confusion matrix ──────────────────────────────────────────────────────────
-cm, acc, n, missing = load_confusion_matrix(
+cm_norm, acc_norm, cm_raw, acc_raw, n, missing = load_confusion_matrix(
     selected_rowids=tuple(selected_rowids) if selected_rowids else None
 )
 
 if missing:
     st.error(f"Missing files: {', '.join(missing)}")
-elif cm is not None:
-    st.plotly_chart(confusion_matrix_fig(cm, acc, n),
-                    use_container_width=True, config={"displayModeBar": False})
+elif cm_norm is not None:
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Normalised X** (X − mean) / std")
+        st.plotly_chart(confusion_matrix_fig(cm_norm, acc_norm, n, "Normalised X"),
+                        use_container_width=True, config={"displayModeBar": False})
+    with col2:
+        st.markdown("**Raw X** (no normalisation)")
+        st.plotly_chart(confusion_matrix_fig(cm_raw, acc_raw, n, "Raw X"),
+                        use_container_width=True, config={"displayModeBar": False})
 else:
     st.warning("Could not load model data.")
 
