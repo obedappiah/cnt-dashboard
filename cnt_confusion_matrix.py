@@ -109,7 +109,6 @@ def confusion_matrix_fig(cm, acc, n):
 # ── Page ──────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="CNT Confusion Matrix", layout="centered")
 st.title("CNT Pulse Outcome Prediction")
-st.caption("Multinomial logistic regression — nanotube electromigration data.")
 st.divider()
 
 # ── New entry selector ────────────────────────────────────────────────────────
@@ -138,16 +137,6 @@ if missing:
 elif cm is not None:
     st.plotly_chart(confusion_matrix_fig(cm, acc, n),
                     use_container_width=True, config={"displayModeBar": False})
-
-    K       = cm.shape[0]
-    cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True).clip(min=1)
-    rows    = [{"Class": CLASS_LABELS[i],
-                "Samples": int(cm[i].sum()),
-                "Correct": int(cm[i, i]),
-                "Accuracy (%)": f"{cm_norm[i, i]*100:.1f}"}
-               for i in range(K)]
-    st.subheader("Per-class breakdown")
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 else:
     st.warning("Could not load model data.")
 
